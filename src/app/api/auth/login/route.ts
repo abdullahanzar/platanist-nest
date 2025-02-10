@@ -21,7 +21,7 @@ export async function POST(request: Request) {
             subject: "Login Notification",
             text: `Hello, ${
               userDetails.name
-            }! You have successfully logged in to your account at ${new Date().toLocaleString()} If this wasn't you, please reach out to abdullahanzar789@gmail.com or platanist@gmail.com urgently.`,
+            }! You have successfully logged in to your account at ${new Date().toLocaleString()}. If this wasn't you, please reach out to abdullahanzar789@gmail.com or platanist@gmail.com urgently.`,
           });
           return Response.json({
             status: true,

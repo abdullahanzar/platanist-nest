@@ -14,6 +14,9 @@ import {
   TooltipTrigger,
 } from "./ui/tooltip";
 import BasicLoader from "./loaders/basic-loader";
+import PlatanistIcon from "../../public/platanist.svg";
+import GitHubIcon from "../../public/github.svg"; 
+import { useRouter } from "next/navigation";
 
 //I haven't used any validation library rather relied on states deliberately.
 //I intend to package this into a PWAClient and use it as a standalone app so minimal dependencies.
@@ -40,6 +43,7 @@ export function AuthForm({
     enabled: false,
     text: "",
   });
+  const router = useRouter();
 
   const toggleMode = () => setIsLogin(!isLogin);
 
@@ -129,7 +133,7 @@ export function AuthForm({
             >
               <div className="flex h-8 w-8 items-center justify-center rounded-md">
                 <Image
-                  src="/platanist.svg"
+                  src={PlatanistIcon}
                   alt="Platanist"
                   width={32}
                   height={32}
@@ -270,6 +274,7 @@ export function AuthForm({
                               password: auth.password,
                             });
                             setLoader({ enabled: false, text: "" });
+                            router.replace("/");
                           } else {
                             await register();
                             setLoader({ enabled: false, text: "" });
@@ -318,7 +323,7 @@ export function AuthForm({
           <div className="grid gap-4 sm:grid-cols-2">
             <Button variant="outline" className="w-full">
               <Image
-                src="/github.svg"
+                src={GitHubIcon}
                 alt="GitHub"
                 width={32}
                 height={32}
