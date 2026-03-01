@@ -1,36 +1,51 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# platanist-nest
 
-## Getting Started
+Platanist Nest is a key-based encrypted vault interface and API.
 
-First, run the development server:
+- No login/profile management in the main vault UX.
+- Private keys are generated/imported client-side.
+- Secrets are encrypted client-side before upload.
+- Server stores ciphertext and metadata only.
+
+## Open Source Transparency
+
+This project is fully open source. Source code can be inspected anytime to verify how encryption, signatures, and server validation are implemented.
+
+You can review:
+- Client encryption and key bundle logic: `src/lib/vault/client.ts`
+- Server verification and nonce freshness checks: `src/lib/vault/server.ts`
+- Vault API routes: `src/app/api/vault/**`
+- UI workflow behavior: `src/components/keys/symmetric-key-generator.tsx`
+
+In the web app, see:
+- `/github` for open-source transparency details
+- `/docs` for practical usage guide
+- `/security` for deep security model and weaknesses
+
+## GitHub Repository Link
+
+Set the repository URL in `.env.local` when ready:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+NEXT_PUBLIC_GITHUB_REPO_URL=https://github.com/your-org/your-repo
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The UI GitHub section will automatically use this value.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## License
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Licensed under the Apache License 2.0.
 
-## Learn More
+- Project license file: `LICENSE`
+- Repository root license file: `../LICENSE`
 
-To learn more about Next.js, take a look at the following resources:
+Apache 2.0 allows use, modification, distribution, and hosting (including commercial use), subject to license terms and notices.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Development
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+pnpm install
+pnpm dev
+```
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Then open `http://localhost:3000`.

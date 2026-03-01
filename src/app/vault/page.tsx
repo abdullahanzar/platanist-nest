@@ -2,6 +2,6 @@
 
 import SecureKeyGenerator from "@/components/keys/symmetric-key-generator";
 
-export default function Home() {
-  return <SecureKeyGenerator view="home" />;
+export default function VaultPage() {
+  return <SecureKeyGenerator view="vault" />;
 }
