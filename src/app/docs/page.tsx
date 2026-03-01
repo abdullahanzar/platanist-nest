@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { BookOpenText, ArrowRight, KeyRound, ShieldCheck, Vault, Github } from "lucide-react";
+import { BookOpenText, ArrowRight, KeyRound, ShieldCheck, Vault, Github, Terminal } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 
@@ -167,6 +167,23 @@ export default function DocsPage() {
         <CardContent>
           <Button variant="outline" asChild>
             <Link href="/github">Open GitHub section</Link>
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card className="border-black/10 bg-white/70">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-xl">
+            <Terminal className="h-5 w-5" />
+            CLI downloads and usage
+          </CardTitle>
+          <CardDescription>
+            Install `nest-cli` from release assets and follow command-line workflows for push/pull.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button variant="outline" asChild>
+            <Link href="/cli">Open CLI section</Link>
           </Button>
         </CardContent>
       </Card>

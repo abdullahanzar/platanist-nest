@@ -10,6 +10,7 @@ const routes = [
   { href: "/", label: "Onboarding" },
   { href: "/vault", label: "Vault" },
   { href: "/key-generation", label: "Keys" },
+  { href: "/cli", label: "CLI" },
   { href: "/docs", label: "Docs" },
   { href: "/security", label: "Security" },
   { href: "/github", label: "GitHub" },
