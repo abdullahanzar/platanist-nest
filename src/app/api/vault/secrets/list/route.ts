@@ -30,19 +30,32 @@ export async function POST(request: Request) {
       return Response.json({ status: false, reason: "Replay or stale request" }, { status: 409 });
     }
 
-    const secrets = await listSecretsByFingerprint(envelope.fingerprint);
+    const entryType = envelope.payload.entryType;
+    const secrets = await listSecretsByFingerprint(envelope.fingerprint, {
+      project: envelope.payload.project,
+      entryType: entryType && entryType !== "all" ? entryType : undefined,
+      search: envelope.payload.search,
+      page: envelope.payload.page,
+      pageSize: envelope.payload.pageSize,
+    });
 
     return Response.json({
       status: true,
-      secrets: secrets.map((secret) => ({
+      secrets: secrets.records.map((secret) => ({
         secretId: secret.secretId,
         title: secret.title,
+        project: secret.project,
+        entryType: secret.entryType,
+        keyName: secret.keyName,
         encryptedSymmetricKey: secret.encryptedSymmetricKey,
         iv: secret.iv,
         ciphertext: envelope.payload.includeCiphertext ? secret.ciphertext : undefined,
         createdAt: secret.createdAt,
         updatedAt: secret.updatedAt,
       })),
+      total: secrets.total,
+      page: secrets.page,
+      pageSize: secrets.pageSize,
     });
   } catch (error) {
     console.error(error);

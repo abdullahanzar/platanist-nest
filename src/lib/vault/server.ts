@@ -160,12 +160,17 @@ export async function upsertSecret(secret: VaultSecretDocument): Promise<void> {
   const db = await mongoDB();
   const secrets = db.collection<VaultSecretDocument>("vault-secrets");
   await secrets.createIndex({ fingerprint: 1, secretId: 1 }, { unique: true });
+  await secrets.createIndex({ fingerprint: 1, project: 1, updatedAt: -1 });
+  await secrets.createIndex({ fingerprint: 1, entryType: 1, updatedAt: -1 });
 
   await secrets.updateOne(
     { fingerprint: secret.fingerprint, secretId: secret.secretId },
     {
       $set: {
         title: secret.title,
+        project: secret.project,
+        entryType: secret.entryType,
+        keyName: secret.keyName,
         encryptedSymmetricKey: secret.encryptedSymmetricKey,
         iv: secret.iv,
         ciphertext: secret.ciphertext,
@@ -179,12 +184,90 @@ export async function upsertSecret(secret: VaultSecretDocument): Promise<void> {
   );
 }
 
-export async function listSecretsByFingerprint(fingerprint: string): Promise<VaultSecretDocument[]> {
+export async function upsertSecretsBatch(secretsInput: VaultSecretDocument[]): Promise<void> {
+  if (secretsInput.length === 0) {
+    return;
+  }
+
   const db = await mongoDB();
   const secrets = db.collection<VaultSecretDocument>("vault-secrets");
   await secrets.createIndex({ fingerprint: 1, secretId: 1 }, { unique: true });
+  await secrets.createIndex({ fingerprint: 1, project: 1, updatedAt: -1 });
+  await secrets.createIndex({ fingerprint: 1, entryType: 1, updatedAt: -1 });
 
-  return secrets.find({ fingerprint }).sort({ updatedAt: -1 }).toArray();
+  await secrets.bulkWrite(
+    secretsInput.map((secret) => ({
+      updateOne: {
+        filter: { fingerprint: secret.fingerprint, secretId: secret.secretId },
+        update: {
+          $set: {
+            title: secret.title,
+            project: secret.project,
+            entryType: secret.entryType,
+            keyName: secret.keyName,
+            encryptedSymmetricKey: secret.encryptedSymmetricKey,
+            iv: secret.iv,
+            ciphertext: secret.ciphertext,
+            updatedAt: secret.updatedAt,
+          },
+          $setOnInsert: {
+            createdAt: secret.createdAt,
+          },
+        },
+        upsert: true,
+      },
+    })),
+    { ordered: false },
+  );
+}
+
+export async function listSecretsByFingerprint(
+  fingerprint: string,
+  options?: {
+    project?: string;
+    entryType?: "secret" | "note";
+    search?: string;
+    page?: number;
+    pageSize?: number;
+  },
+): Promise<{ records: VaultSecretDocument[]; total: number; page: number; pageSize: number }> {
+  const db = await mongoDB();
+  const secrets = db.collection<VaultSecretDocument>("vault-secrets");
+  await secrets.createIndex({ fingerprint: 1, secretId: 1 }, { unique: true });
+  await secrets.createIndex({ fingerprint: 1, project: 1, updatedAt: -1 });
+  await secrets.createIndex({ fingerprint: 1, entryType: 1, updatedAt: -1 });
+
+  const query: Record<string, unknown> = { fingerprint };
+  if (options?.project) {
+    query.project = options.project;
+  }
+  if (options?.entryType) {
+    query.entryType = options.entryType;
+  }
+  if (options?.search?.trim()) {
+    const pattern = options.search.trim();
+    query.$or = [
+      { title: { $regex: pattern, $options: "i" } },
+      { keyName: { $regex: pattern, $options: "i" } },
+      { project: { $regex: pattern, $options: "i" } },
+    ];
+  }
+
+  const pageSize = Math.min(Math.max(options?.pageSize ?? 50, 1), 200);
+  const page = Math.max(options?.page ?? 1, 1);
+  const skip = (page - 1) * pageSize;
+
+  const [records, total] = await Promise.all([
+    secrets.find(query).sort({ updatedAt: -1 }).skip(skip).limit(pageSize).toArray(),
+    secrets.countDocuments(query),
+  ]);
+
+  return {
+    records,
+    total,
+    page,
+    pageSize,
+  };
 }
 
 export async function deleteSecretByFingerprint(fingerprint: string, secretId: string): Promise<boolean> {

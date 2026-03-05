@@ -1,4 +1,5 @@
 import type {
+  CreateSecretsBatchPayload,
   CreateSecretPayload,
   DeleteSecretPayload,
   ListSecretsPayload,
@@ -428,6 +429,9 @@ export function getRegisterPayload(importedKeys: ImportedVaultKeys): RegisterPay
 export function getCreatePayload(input: {
   secretId: string;
   title: string;
+  project?: string;
+  entryType?: "secret" | "note";
+  keyName?: string;
   encryptedSymmetricKey: string;
   iv: string;
   ciphertext: string;
@@ -435,14 +439,35 @@ export function getCreatePayload(input: {
   return {
     secretId: input.secretId,
     title: input.title,
+    project: input.project,
+    entryType: input.entryType,
+    keyName: input.keyName,
     encryptedSymmetricKey: input.encryptedSymmetricKey,
     iv: input.iv,
     ciphertext: input.ciphertext,
   };
 }
 
-export function getListPayload(): ListSecretsPayload {
-  return { includeCiphertext: true };
+export function getBatchCreatePayload(records: CreateSecretPayload[]): CreateSecretsBatchPayload {
+  return { records };
+}
+
+export function getListPayload(input?: {
+  includeCiphertext?: boolean;
+  project?: string;
+  entryType?: "secret" | "note" | "all";
+  search?: string;
+  page?: number;
+  pageSize?: number;
+}): ListSecretsPayload {
+  return {
+    includeCiphertext: input?.includeCiphertext ?? true,
+    project: input?.project,
+    entryType: input?.entryType,
+    search: input?.search,
+    page: input?.page,
+    pageSize: input?.pageSize,
+  };
 }
 
 export function getDeletePayload(secretId: string): DeleteSecretPayload {

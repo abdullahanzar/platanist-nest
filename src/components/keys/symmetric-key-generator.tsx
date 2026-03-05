@@ -1,17 +1,32 @@
 import React, { useMemo, useState } from "react";
-import { Shield, KeyRound, Upload, Download, RefreshCw, Lock, Unlock, Trash2 } from "lucide-react";
+import {
+  Shield,
+  KeyRound,
+  Upload,
+  Download,
+  RefreshCw,
+  Lock,
+  Unlock,
+  Trash2,
+  FileUp,
+  NotebookPen,
+  Layers,
+  Search,
+} from "lucide-react";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Textarea } from "../ui/textarea";
+import BasicLoader from "../loaders/basic-loader";
 import {
   createSignedEnvelope,
   decryptSecret,
   downloadBundle,
   encryptSecret,
   generateVaultKeyBundle,
+  getBatchCreatePayload,
   getCreatePayload,
   getDeletePayload,
   getListPayload,
@@ -21,11 +36,16 @@ import {
   type ImportedVaultKeys,
   type VaultKeyBundle,
 } from "@/lib/vault/client";
+import { parseDotEnv, type EnvParseIssue, type ParsedEnvEntry } from "@/lib/vault/env-parser";
+import { SECRET_TEMPLATES } from "@/lib/vault/templates";
 import { cn } from "@/lib/utils";
 
 type VaultSecret = {
   secretId: string;
   title: string;
+  project?: string;
+  entryType?: "secret" | "note";
+  keyName?: string;
   encryptedSymmetricKey: string;
   iv: string;
   ciphertext: string;
@@ -48,6 +68,17 @@ type RegisterResponse = {
 
 type WorkflowMode = "create" | "access";
 
+type ParsedRow = ParsedEnvEntry & {
+  selected: boolean;
+  editableKey: string;
+};
+
+type DecryptedNotePayload = {
+  kind?: string;
+  title?: string;
+  description?: string;
+};
+
 const VIEW_COPY = {
   home: {
     title: "Set up your vault in minutes",
@@ -59,7 +90,7 @@ const VIEW_COPY = {
   },
   vault: {
     title: "Store and retrieve secrets",
-    subtitle: "Write secrets, load your encrypted entries, and decrypt locally.",
+    subtitle: "Write secrets, bulk import env files, save notes, and decrypt locally.",
   },
 } as const;
 
@@ -71,7 +102,6 @@ const statusClasses: Record<FeedbackTone, string> = {
 
 const formatFingerprint = (fingerprint?: string) => {
   if (!fingerprint) return "No key loaded";
-
   return fingerprint.match(/.{1,8}/g)?.join(" ") ?? fingerprint;
 };
 
@@ -90,20 +120,81 @@ const formatDate = (value: string) => {
   }).format(date);
 };
 
+const tryParseDecryptedNote = (decryptedText?: string): DecryptedNotePayload | null => {
+  if (!decryptedText) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(decryptedText) as DecryptedNotePayload;
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+
+    if (parsed.kind !== "note") {
+      return null;
+    }
+
+    if (typeof parsed.title !== "string" && typeof parsed.description !== "string") {
+      return null;
+    }
+
+    return parsed;
+  } catch {
+    return null;
+  }
+};
+
 const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
   const [bundle, setBundle] = useState<VaultKeyBundle | null>(null);
   const [importedKeys, setImportedKeys] = useState<ImportedVaultKeys | null>(null);
   const [title, setTitle] = useState("");
   const [secretText, setSecretText] = useState("");
+  const [project, setProject] = useState("");
+  const [search, setSearch] = useState("");
+  const [entryTypeFilter, setEntryTypeFilter] = useState<"all" | "secret" | "note">("all");
+  const [page, setPage] = useState(1);
+  const [pageSize] = useState(25);
+  const [totalCount, setTotalCount] = useState(0);
   const [notes, setNotes] = useState<VaultSecret[]>([]);
   const [busy, setBusy] = useState(false);
+  const [listBusy, setListBusy] = useState(false);
+  const [batchBusy, setBatchBusy] = useState(false);
   const [exportPassphrase, setExportPassphrase] = useState("");
   const [importPassphrase, setImportPassphrase] = useState("");
   const [feedback, setFeedback] = useState<{ tone: FeedbackTone; text: string } | null>(null);
   const [identityReady, setIdentityReady] = useState(false);
   const [workflow, setWorkflow] = useState<WorkflowMode>(view === "vault" ? "access" : "create");
+  const [envText, setEnvText] = useState("");
+  const [strictParse, setStrictParse] = useState(false);
+  const [envIssues, setEnvIssues] = useState<EnvParseIssue[]>([]);
+  const [parsedRows, setParsedRows] = useState<ParsedRow[]>([]);
+  const [templateId, setTemplateId] = useState("");
+  const [noteTitle, setNoteTitle] = useState("");
+  const [noteDescription, setNoteDescription] = useState("");
+  const [decrypting, setDecrypting] = useState<Record<string, boolean>>({});
+  const [deleting, setDeleting] = useState<Record<string, boolean>>({});
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
 
   const canUseVault = useMemo(() => Boolean(importedKeys), [importedKeys]);
+
+  const groupedNotes = useMemo(() => {
+    return notes.reduce<Record<string, VaultSecret[]>>((acc, item) => {
+      const key = item.project?.trim() || "Unassigned";
+      if (!acc[key]) {
+        acc[key] = [];
+      }
+      acc[key].push(item);
+      return acc;
+    }, {});
+  }, [notes]);
+
+  const totalPages = useMemo(() => {
+    if (totalCount === 0) {
+      return 1;
+    }
+    return Math.max(1, Math.ceil(totalCount / pageSize));
+  }, [totalCount, pageSize]);
 
   const setStatus = (tone: FeedbackTone, text: string) => {
     setFeedback({ tone, text });
@@ -114,7 +205,7 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
   };
 
   const callApi = async <TPayload extends object, TResponse>(
-    action: "register" | "create-secret" | "list-secrets" | "delete-secret",
+    action: "register" | "create-secret" | "create-secrets-batch" | "list-secrets" | "delete-secret",
     payload: TPayload,
   ): Promise<TResponse> => {
     if (!importedKeys) {
@@ -123,21 +214,14 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
 
     const envelope = await createSignedEnvelope(action, payload, importedKeys);
     let endpoint = "/api/vault/register";
-    if (action === "create-secret") {
-      endpoint = "/api/vault/secrets";
-    }
-    if (action === "list-secrets") {
-      endpoint = "/api/vault/secrets/list";
-    }
-    if (action === "delete-secret") {
-      endpoint = "/api/vault/secrets/delete";
-    }
+    if (action === "create-secret") endpoint = "/api/vault/secrets";
+    if (action === "create-secrets-batch") endpoint = "/api/vault/secrets/batch";
+    if (action === "list-secrets") endpoint = "/api/vault/secrets/list";
+    if (action === "delete-secret") endpoint = "/api/vault/secrets/delete";
 
     const response = await fetch(endpoint, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(envelope),
     });
 
@@ -215,39 +299,28 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
 
   const registerIdentity = async (manual = true): Promise<boolean> => {
     if (!importedKeys) {
-      if (manual) {
-        setStatus("error", "Import a key bundle first.");
-      }
+      if (manual) setStatus("error", "Import a key bundle first.");
       return false;
     }
 
     if (identityReady) {
-      if (manual) {
-        setStatus("success", "Key is already activated.");
-      }
+      if (manual) setStatus("success", "Key is already activated.");
       return true;
     }
 
     const payload = getRegisterPayload(importedKeys);
-
     try {
       const result = await callApi<typeof payload, RegisterResponse>("register", payload);
       if (result.status || isAlreadyRegistered(result.reason)) {
         setIdentityReady(true);
-        if (manual) {
-          setStatus("success", "Key activated and ready.");
-        }
+        if (manual) setStatus("success", "Key activated and ready.");
         return true;
       }
 
-      if (manual) {
-        setStatus("error", result.reason || "Activation failed.");
-      }
+      if (manual) setStatus("error", result.reason || "Activation failed.");
       return false;
     } catch {
-      if (manual) {
-        setStatus("error", "Activation request failed.");
-      }
+      if (manual) setStatus("error", "Activation request failed.");
       return false;
     }
   };
@@ -272,18 +345,32 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
     return true;
   };
 
-  const loadSecrets = async () => {
+  const loadSecrets = async (requestedPage = page) => {
     const ready = await ensureIdentityReady();
     if (!ready) return;
 
-    setBusy(true);
+    setListBusy(true);
     setFeedback(null);
     try {
-      const payload = getListPayload();
-      const result = await callApi<typeof payload, { status: boolean; reason?: string; secrets?: VaultSecret[] }>(
-        "list-secrets",
-        payload,
-      );
+      const payload = getListPayload({
+        includeCiphertext: true,
+        project: project.trim() || undefined,
+        entryType: entryTypeFilter,
+        search: search.trim() || undefined,
+        page: requestedPage,
+        pageSize,
+      });
+      const result = await callApi<
+        typeof payload,
+        {
+          status: boolean;
+          reason?: string;
+          secrets?: VaultSecret[];
+          total?: number;
+          page?: number;
+          pageSize?: number;
+        }
+      >("list-secrets", payload);
 
       if (!result.status) {
         setStatus("error", result.reason || "Could not load secrets.");
@@ -291,17 +378,24 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
       }
 
       setNotes(result.secrets || []);
+      setTotalCount(result.total || 0);
+      setPage(result.page || requestedPage);
       setStatus("success", `Loaded ${(result.secrets || []).length} encrypted secrets.`);
     } catch {
       setStatus("error", "Failed to load secrets.");
     } finally {
-      setBusy(false);
+      setListBusy(false);
     }
   };
 
   const saveSecret = async () => {
     const ready = await ensureIdentityReady();
     if (!ready) return;
+
+    if (!project.trim()) {
+      setStatus("error", "Project is required.");
+      return;
+    }
 
     if (!title.trim() || !secretText.trim()) {
       setStatus("error", "Title and secret text are required.");
@@ -315,6 +409,9 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
       const payload = getCreatePayload({
         secretId: crypto.randomUUID(),
         title: title.trim(),
+        project: project.trim(),
+        entryType: "secret",
+        keyName: title.trim(),
         encryptedSymmetricKey: encrypted.encryptedSymmetricKey,
         iv: encrypted.iv,
         ciphertext: encrypted.ciphertext,
@@ -337,12 +434,155 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
     }
   };
 
+  const parseEnvDraft = () => {
+    const result = parseDotEnv(envText, strictParse);
+    setEnvIssues(result.issues);
+    setParsedRows(
+      result.entries.map((entry) => ({
+        ...entry,
+        selected: true,
+        editableKey: entry.key,
+      })),
+    );
+
+    if (result.entries.length === 0 && result.issues.length > 0) {
+      setStatus("error", "No valid env entries parsed.");
+      return;
+    }
+
+    setStatus("success", `Parsed ${result.entries.length} entries from .env.`);
+  };
+
+  const applyTemplate = () => {
+    const template = SECRET_TEMPLATES.find((item) => item.id === templateId);
+    if (!template) return;
+
+    setParsedRows(
+      template.keys.map((key, idx) => ({
+        key,
+        editableKey: key,
+        value: "",
+        line: idx + 1,
+        selected: true,
+      })),
+    );
+    setEnvIssues([]);
+    setStatus("success", `${template.label} template loaded.`);
+  };
+
+  const saveParsedRows = async () => {
+    const ready = await ensureIdentityReady();
+    if (!ready) return;
+
+    if (!project.trim()) {
+      setStatus("error", "Project is required for bulk save.");
+      return;
+    }
+
+    const selected = parsedRows.filter((row) => row.selected && row.editableKey.trim());
+    if (selected.length === 0) {
+      setStatus("error", "Select at least one row to save.");
+      return;
+    }
+
+    setBatchBusy(true);
+    setFeedback(null);
+    try {
+      const records: ReturnType<typeof getCreatePayload>[] = [];
+      for (const row of selected) {
+        // Encrypting row-by-row avoids large memory spikes in browsers.
+        const encrypted = await encryptSecret(row.value, importedKeys!.encryptionPublicKey);
+        records.push(
+          getCreatePayload({
+            secretId: crypto.randomUUID(),
+            title: row.editableKey.trim(),
+            project: project.trim(),
+            entryType: "secret",
+            keyName: row.editableKey.trim(),
+            encryptedSymmetricKey: encrypted.encryptedSymmetricKey,
+            iv: encrypted.iv,
+            ciphertext: encrypted.ciphertext,
+          }),
+        );
+      }
+
+      const payload = getBatchCreatePayload(records);
+      const result = await callApi<typeof payload, { status: boolean; reason?: string; count?: number }>(
+        "create-secrets-batch",
+        payload,
+      );
+
+      if (!result.status) {
+        setStatus("error", result.reason || "Could not save batch.");
+        return;
+      }
+
+      setStatus("success", `Saved ${result.count || records.length} encrypted entries.`);
+      await loadSecrets(1);
+    } catch {
+      setStatus("error", "Failed to save parsed rows.");
+    } finally {
+      setBatchBusy(false);
+    }
+  };
+
+  const saveNote = async () => {
+    const ready = await ensureIdentityReady();
+    if (!ready) return;
+
+    if (!project.trim()) {
+      setStatus("error", "Project is required for notes.");
+      return;
+    }
+
+    if (!noteTitle.trim() || !noteDescription.trim()) {
+      setStatus("error", "Note title and description are required.");
+      return;
+    }
+
+    setBusy(true);
+    setFeedback(null);
+    try {
+      const payloadText = JSON.stringify({
+        kind: "note",
+        title: noteTitle.trim(),
+        description: noteDescription.trim(),
+      });
+      const encrypted = await encryptSecret(payloadText, importedKeys!.encryptionPublicKey);
+      const payload = getCreatePayload({
+        secretId: crypto.randomUUID(),
+        title: noteTitle.trim(),
+        project: project.trim(),
+        entryType: "note",
+        keyName: noteTitle.trim(),
+        encryptedSymmetricKey: encrypted.encryptedSymmetricKey,
+        iv: encrypted.iv,
+        ciphertext: encrypted.ciphertext,
+      });
+
+      const result = await callApi<typeof payload, { status: boolean; reason?: string }>("create-secret", payload);
+      if (!result.status) {
+        setStatus("error", result.reason || "Could not save note.");
+        return;
+      }
+
+      setNoteTitle("");
+      setNoteDescription("");
+      setStatus("success", "Encrypted note saved.");
+    } catch {
+      setStatus("error", "Failed to save note.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const decryptOne = async (note: VaultSecret) => {
     if (!importedKeys) {
       setStatus("error", "Import a key bundle first.");
       return;
     }
 
+    setDecrypting((prev) => ({ ...prev, [note.secretId]: true }));
     try {
       const plaintext = await decryptSecret(
         {
@@ -368,6 +608,20 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
             : item,
         ),
       );
+    } finally {
+      setDecrypting((prev) => {
+        const next = { ...prev };
+        delete next[note.secretId];
+        return next;
+      });
+    }
+  };
+
+  const decryptVisible = async () => {
+    for (const note of notes) {
+      if (!note.decryptedText) {
+        await decryptOne(note);
+      }
     }
   };
 
@@ -378,7 +632,7 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
     const shouldDelete = window.confirm("Delete this encrypted secret? This cannot be undone.");
     if (!shouldDelete) return;
 
-    setBusy(true);
+    setDeleting((prev) => ({ ...prev, [secretId]: true }));
     setFeedback(null);
     try {
       const payload = getDeletePayload(secretId);
@@ -394,7 +648,11 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
     } catch {
       setStatus("error", "Delete request failed.");
     } finally {
-      setBusy(false);
+      setDeleting((prev) => {
+        const next = { ...prev };
+        delete next[secretId];
+        return next;
+      });
     }
   };
 
@@ -462,9 +720,7 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
         <Card className="animate-rise border-black/10 bg-white/70">
           <CardHeader>
             <CardTitle>Choose your path</CardTitle>
-            <CardDescription>
-              Keep operations separate to avoid mistakes: new vault setup is isolated from returning access.
-            </CardDescription>
+            <CardDescription>You can always add with an active key. Use these paths to focus on setup or return access.</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-3 sm:grid-cols-2">
             <button
@@ -479,7 +735,7 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
             >
               <p className="text-sm font-semibold">Create New Vault</p>
               <p className={cn("mt-1 text-xs", showCreatePath ? "text-white/80" : "text-muted-foreground")}>
-                Generate a new key and save new secrets.
+                Generate a new key and save secrets.
               </p>
             </button>
 
@@ -495,7 +751,7 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
             >
               <p className="text-sm font-semibold">Return to Vault</p>
               <p className={cn("mt-1 text-xs", showAccessPath ? "text-white/80" : "text-muted-foreground")}>
-                Import your key and load existing encrypted secrets.
+                Import your key, load entries, and add more.
               </p>
             </button>
           </CardContent>
@@ -504,9 +760,7 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
 
       <Card className="animate-rise border-black/10 bg-white/70">
         <CardHeader>
-          <CardTitle>
-            {showCreatePath ? "New vault setup" : "Return with existing key"}
-          </CardTitle>
+          <CardTitle>{showCreatePath ? "New vault setup" : "Return with existing key"}</CardTitle>
           <CardDescription>
             Your private key never leaves this browser. Losing your bundle and passphrase means permanent data loss.
           </CardDescription>
@@ -523,7 +777,7 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
                   <Download />
                   Download Bundle
                 </Button>
-                <Button onClick={() => registerIdentity(true)} variant="outline" disabled={!canUseVault || busy} className="w-full sm:w-auto">
+                <Button onClick={() => void registerIdentity(true)} variant="outline" disabled={!canUseVault || busy} className="w-full sm:w-auto">
                   <Shield />
                   Activate Key
                 </Button>
@@ -545,12 +799,12 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
           {showAccessPath && (
             <>
               <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-                <Button onClick={() => registerIdentity(true)} variant="outline" disabled={!canUseVault || busy} className="w-full sm:w-auto">
+                <Button onClick={() => void registerIdentity(true)} variant="outline" disabled={!canUseVault || busy} className="w-full sm:w-auto">
                   <Shield />
                   Activate Key
                 </Button>
                 {showVaultOps && (
-                  <Button onClick={loadSecrets} variant="outline" disabled={!canUseVault || busy} className="w-full sm:w-auto">
+                  <Button onClick={() => void loadSecrets(1)} variant="outline" disabled={!canUseVault || listBusy} className="w-full sm:w-auto">
                     <RefreshCw />
                     Load Secrets
                   </Button>
@@ -590,11 +844,11 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
           <div className="space-y-2 rounded-lg border border-black/10 bg-background/80 p-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <p className="text-xs font-medium uppercase tracking-[0.15em] text-muted-foreground">Fingerprint</p>
-              <Button size="sm" variant="ghost" onClick={copyFingerprint} disabled={!importedKeys?.fingerprint}>
+              <Button size="sm" variant="ghost" onClick={() => void copyFingerprint()} disabled={!importedKeys?.fingerprint}>
                 Copy
               </Button>
             </div>
-            <p className="font-mono text-xs break-all text-foreground">{formatFingerprint(importedKeys?.fingerprint)}</p>
+            <p className="font-mono break-all text-xs text-foreground">{formatFingerprint(importedKeys?.fingerprint)}</p>
             <p className="text-xs text-muted-foreground">This key id helps confirm you loaded the right bundle.</p>
           </div>
 
@@ -606,35 +860,179 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
         </CardContent>
       </Card>
 
-      {showVaultOps && showCreatePath && (
+      {showVaultOps && (showCreatePath || canUseVault) && (
         <Card className="animate-rise border-black/10 bg-white/70">
           <CardHeader>
             <CardTitle>Create secret</CardTitle>
-            <CardDescription>Secret text is encrypted locally before it is sent to the server.</CardDescription>
+            <CardDescription>All content below is encrypted in-browser before upload.</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-3">
+          <CardContent className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="title">Title</Label>
+              <Label htmlFor="project">Project</Label>
               <Input
-                id="title"
-                value={title}
-                onChange={(event) => setTitle(event.target.value)}
-                placeholder="Example: Production API key"
+                id="project"
+                value={project}
+                onChange={(event) => setProject(event.target.value)}
+                placeholder="Example: payments-api"
               />
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="secret">Secret content</Label>
-              <Textarea
-                id="secret"
-                value={secretText}
-                onChange={(event) => setSecretText(event.target.value)}
-                placeholder="Write your secret content here"
-              />
+
+            <div className="space-y-2 rounded-lg border border-black/10 bg-background/70 p-4">
+              <p className="text-sm font-semibold">Single secret</p>
+              <div className="space-y-2">
+                <Label htmlFor="title">Title</Label>
+                <Input
+                  id="title"
+                  value={title}
+                  onChange={(event) => setTitle(event.target.value)}
+                  placeholder="Production API key"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="secret">Secret content</Label>
+                <Textarea
+                  id="secret"
+                  value={secretText}
+                  onChange={(event) => setSecretText(event.target.value)}
+                  placeholder="Write your secret content here"
+                />
+              </div>
+              <Button onClick={() => void saveSecret()} disabled={!canUseVault || busy} className="w-full sm:w-auto">
+                <Lock />
+                Save and Encrypt
+              </Button>
             </div>
-            <Button onClick={saveSecret} disabled={!canUseVault || busy} className="w-full sm:w-auto">
-              <Lock />
-              Save and Encrypt
-            </Button>
+
+            <div className="space-y-3 rounded-lg border border-black/10 bg-background/70 p-4">
+              <div className="flex items-center gap-2">
+                <FileUp className="h-4 w-4" />
+                <p className="text-sm font-semibold">Bulk import from .env</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="env-draft">Paste .env content</Label>
+                <Textarea
+                  id="env-draft"
+                  value={envText}
+                  onChange={(event) => setEnvText(event.target.value)}
+                  placeholder="DB_URL=...&#10;API_KEY=..."
+                />
+              </div>
+              <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={strictParse}
+                  onChange={(event) => setStrictParse(event.target.checked)}
+                />
+                Strict mode (fail all if any line is invalid)
+              </label>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="outline" onClick={parseEnvDraft}>
+                  Parse .env
+                </Button>
+              </div>
+
+              <div className="grid gap-2 sm:grid-cols-[1fr_auto] sm:items-end">
+                <div className="space-y-2">
+                  <Label htmlFor="template">Template starter</Label>
+                  <select
+                    id="template"
+                    value={templateId}
+                    onChange={(event) => setTemplateId(event.target.value)}
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="">Select template</option>
+                    {SECRET_TEMPLATES.map((template) => (
+                      <option key={template.id} value={template.id}>
+                        {template.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <Button type="button" variant="outline" onClick={applyTemplate} disabled={!templateId}>
+                  <Layers />
+                  Apply Template
+                </Button>
+              </div>
+
+              {envIssues.length > 0 && (
+                <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
+                  {envIssues.slice(0, 6).map((issue) => (
+                    <p key={`${issue.line}-${issue.reason}`}>Line {issue.line}: {issue.reason}</p>
+                  ))}
+                  {envIssues.length > 6 && <p>+ {envIssues.length - 6} more issues</p>}
+                </div>
+              )}
+
+              {parsedRows.length > 0 && (
+                <div className="space-y-2 rounded-md border border-black/10 bg-background/90 p-3">
+                  <p className="text-xs font-medium uppercase tracking-[0.15em] text-muted-foreground">
+                    Preview ({parsedRows.length})
+                  </p>
+                  {parsedRows.map((row, idx) => (
+                    <div key={`${row.line}-${idx}`} className="grid grid-cols-[auto_1fr] gap-2 sm:grid-cols-[auto_1fr_2fr]">
+                      <label className="inline-flex items-center gap-2 text-xs">
+                        <input
+                          type="checkbox"
+                          checked={row.selected}
+                          onChange={(event) =>
+                            setParsedRows((prev) =>
+                              prev.map((item, itemIdx) =>
+                                itemIdx === idx ? { ...item, selected: event.target.checked } : item,
+                              ),
+                            )
+                          }
+                        />
+                        L{row.line}
+                      </label>
+                      <Input
+                        value={row.editableKey}
+                        onChange={(event) =>
+                          setParsedRows((prev) =>
+                            prev.map((item, itemIdx) =>
+                              itemIdx === idx ? { ...item, editableKey: event.target.value } : item,
+                            ),
+                          )
+                        }
+                      />
+                      <Input value={row.value} readOnly className="hidden sm:block" />
+                    </div>
+                  ))}
+                  <Button type="button" onClick={() => void saveParsedRows()} disabled={!canUseVault || batchBusy}>
+                    <Lock />
+                    {batchBusy ? "Saving..." : "Save Selected"}
+                  </Button>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2 rounded-lg border border-black/10 bg-background/70 p-4">
+              <div className="flex items-center gap-2">
+                <NotebookPen className="h-4 w-4" />
+                <p className="text-sm font-semibold">Encrypted note</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="note-title">Title</Label>
+                <Input
+                  id="note-title"
+                  value={noteTitle}
+                  onChange={(event) => setNoteTitle(event.target.value)}
+                  placeholder="Deployment notes"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="note-description">Description</Label>
+                <Textarea
+                  id="note-description"
+                  value={noteDescription}
+                  onChange={(event) => setNoteDescription(event.target.value)}
+                  placeholder="Write note details here"
+                />
+              </div>
+              <Button type="button" onClick={() => void saveNote()} disabled={!canUseVault || busy}>
+                <Lock />
+                Save Note
+              </Button>
+            </div>
           </CardContent>
         </Card>
       )}
@@ -642,59 +1040,185 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
       {showVaultOps && showAccessPath && (
         <Card className="animate-rise border-black/10 bg-white/70">
           <CardHeader>
-            <CardTitle>Encrypted secrets</CardTitle>
-            <CardDescription>Load entries, decrypt locally when needed, and remove old records safely.</CardDescription>
+            <CardTitle>Encrypted entries</CardTitle>
+            <CardDescription>Load entries, filter by project/type, and decrypt locally when needed.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            {notes.length === 0 && (
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="space-y-2">
+                <Label htmlFor="project-filter">Project filter</Label>
+                <Input
+                  id="project-filter"
+                  value={project}
+                  onChange={(event) => setProject(event.target.value)}
+                  placeholder="All projects"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="search-filter">Search</Label>
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    id="search-filter"
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                    className="pl-8"
+                    placeholder="Title/key/project"
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="entry-type">Type</Label>
+                <select
+                  id="entry-type"
+                  value={entryTypeFilter}
+                  onChange={(event) => setEntryTypeFilter(event.target.value as "all" | "secret" | "note")}
+                  className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                >
+                  <option value="all">All</option>
+                  <option value="secret">Secrets</option>
+                  <option value="note">Notes</option>
+                </select>
+              </div>
+              <div className="flex items-end gap-2">
+                <Button type="button" variant="outline" onClick={() => void loadSecrets(1)} disabled={!canUseVault || listBusy}>
+                  <RefreshCw />
+                  Reload
+                </Button>
+                <Button type="button" variant="outline" onClick={() => void decryptVisible()} disabled={!canUseVault || listBusy}>
+                  <Unlock />
+                  Decrypt Visible
+                </Button>
+              </div>
+            </div>
+
+            {listBusy && (
+              <div className="flex justify-center rounded-md border border-black/10 bg-background/70">
+                <BasicLoader width="60px" height="60px" />
+              </div>
+            )}
+
+            {notes.length === 0 && !listBusy && (
               <Alert>
-                <AlertTitle>No secrets loaded</AlertTitle>
-                <AlertDescription>Use Load Secrets to fetch encrypted entries for this key.</AlertDescription>
+                <AlertTitle>No entries loaded</AlertTitle>
+                <AlertDescription>Use Load Secrets or Reload to fetch encrypted entries for this key.</AlertDescription>
               </Alert>
             )}
 
-            {notes.map((note) => (
-              <div key={note.secretId} className="space-y-3 rounded-lg border border-black/10 bg-background/80 p-4">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                  <div className="space-y-1">
-                    <p className="font-medium">{note.title}</p>
-                    <p className="break-all text-xs text-muted-foreground">{note.secretId}</p>
-                    <p className="text-xs text-muted-foreground">
-                      Created {formatDate(note.createdAt)} | Updated {formatDate(note.updatedAt)}
-                    </p>
-                  </div>
-                  <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => decryptOne(note)}
-                      disabled={!canUseVault || busy}
-                      className="w-full sm:w-auto"
-                    >
-                      <Unlock />
-                      Read
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="destructive"
-                      onClick={() => deleteOne(note.secretId)}
-                      disabled={!canUseVault || busy}
-                      className="w-full sm:w-auto"
-                    >
-                      <Trash2 />
-                      Delete
-                    </Button>
-                  </div>
-                </div>
+            {Object.entries(groupedNotes).map(([group, groupItems]) => {
+              const expanded = expandedGroups[group] ?? true;
+              return (
+                <div key={group} className="rounded-lg border border-black/10 bg-background/70 p-3">
+                  <button
+                    type="button"
+                    onClick={() => setExpandedGroups((prev) => ({ ...prev, [group]: !expanded }))}
+                    className="flex w-full items-center justify-between text-left"
+                  >
+                    <span className="text-sm font-semibold">{group}</span>
+                    <span className="text-xs text-muted-foreground">{groupItems.length} items</span>
+                  </button>
 
-                {note.decryptedText && (
-                  <div className="rounded-md border border-black/10 bg-muted/50 p-3 text-sm whitespace-pre-wrap">
-                    {note.decryptedText}
-                  </div>
-                )}
-                {note.decryptError && <p className="text-sm text-destructive">{note.decryptError}</p>}
+                  {expanded && (
+                    <div className="mt-3 space-y-3">
+                      {groupItems.map((note) => (
+                        <div key={note.secretId} className="space-y-3 rounded-lg border border-black/10 bg-background/80 p-4">
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-2">
+                                <p className="font-medium">{note.title}</p>
+                                <span className="rounded-full border border-black/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                                  {note.entryType || "secret"}
+                                </span>
+                              </div>
+                              <p className="break-all text-xs text-muted-foreground">{note.secretId}</p>
+                              <p className="text-xs text-muted-foreground">
+                                Created {formatDate(note.createdAt)} | Updated {formatDate(note.updatedAt)}
+                              </p>
+                            </div>
+                            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => void decryptOne(note)}
+                                disabled={!canUseVault || Boolean(decrypting[note.secretId])}
+                                className="w-full sm:w-auto"
+                              >
+                                <Unlock />
+                                {decrypting[note.secretId] ? "Decrypting..." : "Read"}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="destructive"
+                                onClick={() => void deleteOne(note.secretId)}
+                                disabled={!canUseVault || Boolean(deleting[note.secretId])}
+                                className="w-full sm:w-auto"
+                              >
+                                <Trash2 />
+                                {deleting[note.secretId] ? "Deleting..." : "Delete"}
+                              </Button>
+                            </div>
+                          </div>
+
+                          {note.decryptedText && (
+                            (() => {
+                              const parsedNote = note.entryType === "note" ? tryParseDecryptedNote(note.decryptedText) : null;
+
+                              if (parsedNote) {
+                                return (
+                                  <div className="rounded-md border border-black/10 bg-muted/50 p-3 text-sm">
+                                    <p className="font-medium text-foreground">{parsedNote.title || note.title}</p>
+                                    <p className="mt-1 whitespace-pre-wrap text-muted-foreground">
+                                      {parsedNote.description || "No note description provided."}
+                                    </p>
+                                  </div>
+                                );
+                              }
+
+                              return (
+                                <div className="whitespace-pre-wrap rounded-md border border-black/10 bg-muted/50 p-3 text-sm">
+                                  {note.decryptedText}
+                                </div>
+                              );
+                            })()
+                          )}
+                          {note.decryptError && <p className="text-sm text-destructive">{note.decryptError}</p>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-black/10 bg-background/70 p-3 text-xs">
+              <p className="text-muted-foreground">
+                Total {totalCount} items | Page {page} of {totalPages}
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={page <= 1 || listBusy}
+                  onClick={() => {
+                    const next = Math.max(1, page - 1);
+                    void loadSecrets(next);
+                  }}
+                >
+                  Previous
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={page >= totalPages || listBusy}
+                  onClick={() => {
+                    const next = Math.min(totalPages, page + 1);
+                    void loadSecrets(next);
+                  }}
+                >
+                  Next
+                </Button>
               </div>
-            ))}
+            </div>
           </CardContent>
         </Card>
       )}

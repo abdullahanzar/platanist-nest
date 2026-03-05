@@ -1,4 +1,11 @@
-export type VaultAction = "register" | "create-secret" | "list-secrets" | "delete-secret";
+export type VaultAction =
+  | "register"
+  | "create-secret"
+  | "create-secrets-batch"
+  | "list-secrets"
+  | "delete-secret";
+
+export type VaultEntryType = "secret" | "note";
 
 export interface IdentityDocument {
   fingerprint: string;
@@ -11,6 +18,9 @@ export interface VaultSecretDocument {
   secretId: string;
   fingerprint: string;
   title: string;
+  project?: string;
+  entryType?: VaultEntryType;
+  keyName?: string;
   encryptedSymmetricKey: string;
   iv: string;
   ciphertext: string;
@@ -35,13 +45,25 @@ export interface RegisterPayload {
 export interface CreateSecretPayload {
   secretId: string;
   title: string;
+  project?: string;
+  entryType?: VaultEntryType;
+  keyName?: string;
   encryptedSymmetricKey: string;
   iv: string;
   ciphertext: string;
 }
 
+export interface CreateSecretsBatchPayload {
+  records: CreateSecretPayload[];
+}
+
 export interface ListSecretsPayload {
   includeCiphertext: boolean;
+  project?: string;
+  entryType?: VaultEntryType | "all";
+  search?: string;
+  page?: number;
+  pageSize?: number;
 }
 
 export interface DeleteSecretPayload {
