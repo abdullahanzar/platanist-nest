@@ -7,6 +7,7 @@ import type {
   SignedEnvelope,
   VaultAction,
 } from "@/lib/vault/types";
+import { canonicalize } from "@/lib/vault/canonical";
 
 export interface VaultKeyBundle {
   version: 1;
@@ -69,24 +70,6 @@ function fromBase64(base64: string): Uint8Array {
     bytes[i] = binary.charCodeAt(i);
   }
   return bytes;
-}
-
-function canonicalize(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value);
-  }
-
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => canonicalize(item)).join(",")}]`;
-  }
-
-  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
-    a.localeCompare(b),
-  );
-
-  return `{${entries
-    .map(([key, val]) => `${JSON.stringify(key)}:${canonicalize(val)}`)
-    .join(",")}}`;
 }
 
 async function sha256Hex(input: string): Promise<string> {
@@ -431,6 +414,7 @@ export function getCreatePayload(input: {
   title: string;
   project?: string;
   entryType?: "secret" | "note";
+  contentKind?: "secret" | "note" | "env";
   keyName?: string;
   encryptedSymmetricKey: string;
   iv: string;
@@ -441,6 +425,7 @@ export function getCreatePayload(input: {
     title: input.title,
     project: input.project,
     entryType: input.entryType,
+    contentKind: input.contentKind,
     keyName: input.keyName,
     encryptedSymmetricKey: input.encryptedSymmetricKey,
     iv: input.iv,
@@ -456,6 +441,7 @@ export function getListPayload(input?: {
   includeCiphertext?: boolean;
   project?: string;
   entryType?: "secret" | "note" | "all";
+  contentKind?: "secret" | "note" | "env" | "all";
   search?: string;
   page?: number;
   pageSize?: number;
@@ -464,6 +450,7 @@ export function getListPayload(input?: {
     includeCiphertext: input?.includeCiphertext ?? true,
     project: input?.project,
     entryType: input?.entryType,
+    contentKind: input?.contentKind,
     search: input?.search,
     page: input?.page,
     pageSize: input?.pageSize,

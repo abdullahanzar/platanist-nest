@@ -6,6 +6,7 @@ export type VaultAction =
   | "delete-secret";
 
 export type VaultEntryType = "secret" | "note";
+export type VaultContentKind = "secret" | "note" | "env";
 
 export interface IdentityDocument {
   fingerprint: string;
@@ -20,6 +21,7 @@ export interface VaultSecretDocument {
   title: string;
   project?: string;
   entryType?: VaultEntryType;
+  contentKind?: VaultContentKind;
   keyName?: string;
   encryptedSymmetricKey: string;
   iv: string;
@@ -47,6 +49,7 @@ export interface CreateSecretPayload {
   title: string;
   project?: string;
   entryType?: VaultEntryType;
+  contentKind?: VaultContentKind;
   keyName?: string;
   encryptedSymmetricKey: string;
   iv: string;
@@ -61,6 +64,7 @@ export interface ListSecretsPayload {
   includeCiphertext: boolean;
   project?: string;
   entryType?: VaultEntryType | "all";
+  contentKind?: VaultContentKind | "all";
   search?: string;
   page?: number;
   pageSize?: number;

@@ -70,6 +70,7 @@ export async function POST(request: Request) {
         title: item.title,
         project: item.project,
         entryType: item.entryType,
+        contentKind: item.contentKind,
         keyName: item.keyName,
         encryptedSymmetricKey: item.encryptedSymmetricKey,
         iv: item.iv,

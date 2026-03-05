@@ -48,6 +48,7 @@ export async function POST(request: Request) {
       title: payload.title,
       project: payload.project,
       entryType: payload.entryType,
+      contentKind: payload.contentKind,
       keyName: payload.keyName,
       encryptedSymmetricKey: payload.encryptedSymmetricKey,
       iv: payload.iv,

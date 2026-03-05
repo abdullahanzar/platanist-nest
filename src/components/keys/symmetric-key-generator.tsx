@@ -45,6 +45,7 @@ type VaultSecret = {
   title: string;
   project?: string;
   entryType?: "secret" | "note";
+  contentKind?: "secret" | "note" | "env";
   keyName?: string;
   encryptedSymmetricKey: string;
   iv: string;
@@ -67,6 +68,7 @@ type RegisterResponse = {
 };
 
 type WorkflowMode = "create" | "access";
+type EntryFilter = "all" | "secret" | "env" | "note";
 
 type ParsedRow = ParsedEnvEntry & {
   selected: boolean;
@@ -77,6 +79,35 @@ type DecryptedNotePayload = {
   kind?: string;
   title?: string;
   description?: string;
+};
+
+type DecryptedEnvPayload = {
+  kind?: string;
+  format?: string;
+  content?: string;
+};
+
+const SIMPLE_DOTENV_VALUE = /^[A-Za-z0-9_./:@-]+$/;
+const LEGACY_ENV_PATTERN = /(^|\W)(\.?env|dotenv)(\W|$)/i;
+
+const formatDotEnvValue = (value: string) => {
+  if (value.length === 0) {
+    return "";
+  }
+
+  if (SIMPLE_DOTENV_VALUE.test(value)) {
+    return value;
+  }
+
+  const escaped = value.replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/"/g, '\\"');
+  return `"${escaped}"`;
+};
+
+const buildDotEnvPayload = (rows: ParsedRow[]) => {
+  return rows
+    .filter((row) => row.selected && row.editableKey.trim())
+    .map((row) => `${row.editableKey.trim()}=${formatDotEnvValue(row.value)}`)
+    .join("\n");
 };
 
 const VIEW_COPY = {
@@ -145,14 +176,52 @@ const tryParseDecryptedNote = (decryptedText?: string): DecryptedNotePayload | n
   }
 };
 
+const tryParseDecryptedEnv = (decryptedText?: string): DecryptedEnvPayload | null => {
+  if (!decryptedText) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(decryptedText) as DecryptedEnvPayload;
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+
+    if (parsed.kind !== "env" || parsed.format !== "dotenv" || typeof parsed.content !== "string") {
+      return null;
+    }
+
+    return parsed;
+  } catch {
+    return null;
+  }
+};
+
+const resolveContentKind = (note: VaultSecret): "secret" | "note" | "env" => {
+  if (note.contentKind) {
+    return note.contentKind;
+  }
+
+  if (note.entryType === "secret") {
+    return "secret";
+  }
+
+  if (LEGACY_ENV_PATTERN.test(`${note.title} ${note.keyName || ""}`)) {
+    return "env";
+  }
+
+  return "note";
+};
+
 const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
   const [bundle, setBundle] = useState<VaultKeyBundle | null>(null);
   const [importedKeys, setImportedKeys] = useState<ImportedVaultKeys | null>(null);
   const [title, setTitle] = useState("");
   const [secretText, setSecretText] = useState("");
-  const [project, setProject] = useState("");
+  const [projectInput, setProjectInput] = useState("");
+  const [projectFilter, setProjectFilter] = useState("");
   const [search, setSearch] = useState("");
-  const [entryTypeFilter, setEntryTypeFilter] = useState<"all" | "secret" | "note">("all");
+  const [entryFilter, setEntryFilter] = useState<EntryFilter>("all");
   const [page, setPage] = useState(1);
   const [pageSize] = useState(25);
   const [totalCount, setTotalCount] = useState(0);
@@ -170,6 +239,7 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
   const [envIssues, setEnvIssues] = useState<EnvParseIssue[]>([]);
   const [parsedRows, setParsedRows] = useState<ParsedRow[]>([]);
   const [templateId, setTemplateId] = useState("");
+  const [envNoteTitle, setEnvNoteTitle] = useState(".env");
   const [noteTitle, setNoteTitle] = useState("");
   const [noteDescription, setNoteDescription] = useState("");
   const [decrypting, setDecrypting] = useState<Record<string, boolean>>({});
@@ -195,6 +265,18 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
     }
     return Math.max(1, Math.ceil(totalCount / pageSize));
   }, [totalCount, pageSize]);
+
+  const projectOptions = useMemo(() => {
+    const uniqueProjects = new Set<string>();
+    for (const item of notes) {
+      const normalized = item.project?.trim();
+      if (normalized) {
+        uniqueProjects.add(normalized);
+      }
+    }
+
+    return Array.from(uniqueProjects).sort((a, b) => a.localeCompare(b));
+  }, [notes]);
 
   const setStatus = (tone: FeedbackTone, text: string) => {
     setFeedback({ tone, text });
@@ -293,7 +375,6 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
       }
     } finally {
       setBusy(false);
-      event.target.value = "";
     }
   };
 
@@ -352,10 +433,13 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
     setListBusy(true);
     setFeedback(null);
     try {
+      const normalizedFilter = entryFilter === "all" ? "all" : entryFilter;
+      const entryType = normalizedFilter === "env" ? "note" : normalizedFilter;
       const payload = getListPayload({
         includeCiphertext: true,
-        project: project.trim() || undefined,
-        entryType: entryTypeFilter,
+        project: projectFilter.trim() || undefined,
+        entryType,
+        contentKind: normalizedFilter,
         search: search.trim() || undefined,
         page: requestedPage,
         pageSize,
@@ -392,7 +476,7 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
     const ready = await ensureIdentityReady();
     if (!ready) return;
 
-    if (!project.trim()) {
+    if (!projectInput.trim()) {
       setStatus("error", "Project is required.");
       return;
     }
@@ -409,8 +493,9 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
       const payload = getCreatePayload({
         secretId: crypto.randomUUID(),
         title: title.trim(),
-        project: project.trim(),
+        project: projectInput.trim(),
         entryType: "secret",
+        contentKind: "secret",
         keyName: title.trim(),
         encryptedSymmetricKey: encrypted.encryptedSymmetricKey,
         iv: encrypted.iv,
@@ -474,7 +559,7 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
     const ready = await ensureIdentityReady();
     if (!ready) return;
 
-    if (!project.trim()) {
+    if (!projectInput.trim()) {
       setStatus("error", "Project is required for bulk save.");
       return;
     }
@@ -496,8 +581,9 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
           getCreatePayload({
             secretId: crypto.randomUUID(),
             title: row.editableKey.trim(),
-            project: project.trim(),
+            project: projectInput.trim(),
             entryType: "secret",
+            contentKind: "secret",
             keyName: row.editableKey.trim(),
             encryptedSymmetricKey: encrypted.encryptedSymmetricKey,
             iv: encrypted.iv,
@@ -526,11 +612,69 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
     }
   };
 
+  const saveEnvNote = async () => {
+    const ready = await ensureIdentityReady();
+    if (!ready) return;
+
+    if (!projectInput.trim()) {
+      setStatus("error", "Project is required for .env notes.");
+      return;
+    }
+
+    if (!envNoteTitle.trim()) {
+      setStatus("error", "A title is required for .env notes.");
+      return;
+    }
+
+    const dotenvContent = buildDotEnvPayload(parsedRows);
+    if (!dotenvContent) {
+      setStatus("error", "Select at least one valid .env row to save.");
+      return;
+    }
+
+    setBatchBusy(true);
+    setFeedback(null);
+    try {
+      const payloadText = JSON.stringify({
+        kind: "env",
+        format: "dotenv",
+        content: dotenvContent,
+      });
+
+      const encrypted = await encryptSecret(payloadText, importedKeys!.encryptionPublicKey);
+      const payload = getCreatePayload({
+        secretId: crypto.randomUUID(),
+        title: envNoteTitle.trim(),
+        project: projectInput.trim(),
+        entryType: "note",
+        contentKind: "env",
+        keyName: envNoteTitle.trim(),
+        encryptedSymmetricKey: encrypted.encryptedSymmetricKey,
+        iv: encrypted.iv,
+        ciphertext: encrypted.ciphertext,
+      });
+
+      const result = await callApi<typeof payload, { status: boolean; reason?: string }>("create-secret", payload);
+
+      if (!result.status) {
+        setStatus("error", result.reason || "Could not save .env note.");
+        return;
+      }
+
+      setStatus("success", "Saved encrypted .env note as a single payload.");
+      await loadSecrets(1);
+    } catch {
+      setStatus("error", "Failed to save .env note.");
+    } finally {
+      setBatchBusy(false);
+    }
+  };
+
   const saveNote = async () => {
     const ready = await ensureIdentityReady();
     if (!ready) return;
 
-    if (!project.trim()) {
+    if (!projectInput.trim()) {
       setStatus("error", "Project is required for notes.");
       return;
     }
@@ -552,8 +696,9 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
       const payload = getCreatePayload({
         secretId: crypto.randomUUID(),
         title: noteTitle.trim(),
-        project: project.trim(),
+        project: projectInput.trim(),
         entryType: "note",
+        contentKind: "note",
         keyName: noteTitle.trim(),
         encryptedSymmetricKey: encrypted.encryptedSymmetricKey,
         iv: encrypted.iv,
@@ -664,6 +809,15 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
       setStatus("success", "Fingerprint copied.");
     } catch {
       setStatus("error", "Could not copy fingerprint.");
+    }
+  };
+
+  const copyText = async (text: string, successMessage: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setStatus("success", successMessage);
+    } catch {
+      setStatus("error", "Could not copy to clipboard.");
     }
   };
 
@@ -871,8 +1025,8 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
               <Label htmlFor="project">Project</Label>
               <Input
                 id="project"
-                value={project}
-                onChange={(event) => setProject(event.target.value)}
+                value={projectInput}
+                onChange={(event) => setProjectInput(event.target.value)}
                 placeholder="Example: payments-api"
               />
             </div>
@@ -997,10 +1151,26 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
                       <Input value={row.value} readOnly className="hidden sm:block" />
                     </div>
                   ))}
-                  <Button type="button" onClick={() => void saveParsedRows()} disabled={!canUseVault || batchBusy}>
-                    <Lock />
-                    {batchBusy ? "Saving..." : "Save Selected"}
-                  </Button>
+
+                  <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto] sm:items-end">
+                    <div className="space-y-2 sm:col-span-1">
+                      <Label htmlFor="env-note-title">.env note title</Label>
+                      <Input
+                        id="env-note-title"
+                        value={envNoteTitle}
+                        onChange={(event) => setEnvNoteTitle(event.target.value)}
+                        placeholder=".env"
+                      />
+                    </div>
+                    <Button type="button" onClick={() => void saveParsedRows()} disabled={!canUseVault || batchBusy}>
+                      <Lock />
+                      {batchBusy ? "Saving..." : "Save Selected"}
+                    </Button>
+                    <Button type="button" variant="outline" onClick={() => void saveEnvNote()} disabled={!canUseVault || batchBusy}>
+                      <NotebookPen />
+                      Save as .env Note
+                    </Button>
+                  </div>
                 </div>
               )}
             </div>
@@ -1046,13 +1216,20 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
           <CardContent className="space-y-3">
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
               <div className="space-y-2">
-                <Label htmlFor="project-filter">Project filter</Label>
-                <Input
+                <Label htmlFor="project-filter">Project</Label>
+                <select
                   id="project-filter"
-                  value={project}
-                  onChange={(event) => setProject(event.target.value)}
-                  placeholder="All projects"
-                />
+                  value={projectFilter}
+                  onChange={(event) => setProjectFilter(event.target.value)}
+                  className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                >
+                  <option value="">All projects</option>
+                  {projectOptions.map((projectOption) => (
+                    <option key={projectOption} value={projectOption}>
+                      {projectOption}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="search-filter">Search</Label>
@@ -1071,13 +1248,14 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
                 <Label htmlFor="entry-type">Type</Label>
                 <select
                   id="entry-type"
-                  value={entryTypeFilter}
-                  onChange={(event) => setEntryTypeFilter(event.target.value as "all" | "secret" | "note")}
+                  value={entryFilter}
+                  onChange={(event) => setEntryFilter(event.target.value as EntryFilter)}
                   className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                 >
                   <option value="all">All</option>
-                  <option value="secret">Secrets</option>
-                  <option value="note">Notes</option>
+                  <option value="secret">.env Variables / Secrets</option>
+                  <option value="env">.env Notes</option>
+                  <option value="note">Encrypted Notes</option>
                 </select>
               </div>
               <div className="flex items-end gap-2">
@@ -1122,12 +1300,18 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
                     <div className="mt-3 space-y-3">
                       {groupItems.map((note) => (
                         <div key={note.secretId} className="space-y-3 rounded-lg border border-black/10 bg-background/80 p-4">
+                          {/** Resolve legacy entries so env/notes/secrets are labeled consistently. */}
+                          {(() => {
+                            const contentKind = resolveContentKind(note);
+                            const kindLabel = contentKind === "env" ? ".env note" : contentKind;
+
+                            return (
                           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                             <div className="space-y-1">
                               <div className="flex items-center gap-2">
                                 <p className="font-medium">{note.title}</p>
                                 <span className="rounded-full border border-black/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
-                                  {note.entryType || "secret"}
+                                  {kindLabel}
                                 </span>
                               </div>
                               <p className="break-all text-xs text-muted-foreground">{note.secretId}</p>
@@ -1158,10 +1342,31 @@ const SecureKeyGenerator = ({ view = "home" }: SecureKeyGeneratorProps) => {
                               </Button>
                             </div>
                           </div>
+                            );
+                          })()}
 
                           {note.decryptedText && (
                             (() => {
                               const parsedNote = note.entryType === "note" ? tryParseDecryptedNote(note.decryptedText) : null;
+                              const parsedEnv = note.entryType === "note" ? tryParseDecryptedEnv(note.decryptedText) : null;
+
+                              if (parsedEnv) {
+                                return (
+                                  <div className="space-y-2 rounded-md border border-black/10 bg-muted/50 p-3 text-sm">
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <p className="font-medium text-foreground">.env payload</p>
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        onClick={() => void copyText(parsedEnv.content || "", "Copied .env payload.")}
+                                      >
+                                        Copy .env
+                                      </Button>
+                                    </div>
+                                    <Textarea value={parsedEnv.content || ""} readOnly className="min-h-36 font-mono text-xs" />
+                                  </div>
+                                );
+                              }
 
                               if (parsedNote) {
                                 return (

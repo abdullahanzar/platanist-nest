@@ -1,4 +1,5 @@
 import { mongoDB } from "@/utils/connection";
+import { canonicalize } from "@/lib/vault/canonical";
 import type {
   IdentityDocument,
   SignedEnvelope,
@@ -8,23 +9,6 @@ import type {
 
 const MAX_SKEW_MS = 5 * 60 * 1000;
 const NONCE_TTL_SECONDS = 10 * 60;
-
-function canonicalize(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value);
-  }
-
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => canonicalize(item)).join(",")}]`;
-  }
-
-  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
-    a.localeCompare(b),
-  );
-  return `{${entries
-    .map(([key, val]) => `${JSON.stringify(key)}:${canonicalize(val)}`)
-    .join(",")}}`;
-}
 
 export function buildSignableMessage<TPayload>(
   envelope: Omit<SignedEnvelope<TPayload>, "signature">,
@@ -162,6 +146,7 @@ export async function upsertSecret(secret: VaultSecretDocument): Promise<void> {
   await secrets.createIndex({ fingerprint: 1, secretId: 1 }, { unique: true });
   await secrets.createIndex({ fingerprint: 1, project: 1, updatedAt: -1 });
   await secrets.createIndex({ fingerprint: 1, entryType: 1, updatedAt: -1 });
+  await secrets.createIndex({ fingerprint: 1, contentKind: 1, updatedAt: -1 });
 
   await secrets.updateOne(
     { fingerprint: secret.fingerprint, secretId: secret.secretId },
@@ -170,6 +155,7 @@ export async function upsertSecret(secret: VaultSecretDocument): Promise<void> {
         title: secret.title,
         project: secret.project,
         entryType: secret.entryType,
+        contentKind: secret.contentKind,
         keyName: secret.keyName,
         encryptedSymmetricKey: secret.encryptedSymmetricKey,
         iv: secret.iv,
@@ -194,6 +180,7 @@ export async function upsertSecretsBatch(secretsInput: VaultSecretDocument[]): P
   await secrets.createIndex({ fingerprint: 1, secretId: 1 }, { unique: true });
   await secrets.createIndex({ fingerprint: 1, project: 1, updatedAt: -1 });
   await secrets.createIndex({ fingerprint: 1, entryType: 1, updatedAt: -1 });
+  await secrets.createIndex({ fingerprint: 1, contentKind: 1, updatedAt: -1 });
 
   await secrets.bulkWrite(
     secretsInput.map((secret) => ({
@@ -204,6 +191,7 @@ export async function upsertSecretsBatch(secretsInput: VaultSecretDocument[]): P
             title: secret.title,
             project: secret.project,
             entryType: secret.entryType,
+            contentKind: secret.contentKind,
             keyName: secret.keyName,
             encryptedSymmetricKey: secret.encryptedSymmetricKey,
             iv: secret.iv,
@@ -226,6 +214,7 @@ export async function listSecretsByFingerprint(
   options?: {
     project?: string;
     entryType?: "secret" | "note";
+    contentKind?: "secret" | "note" | "env";
     search?: string;
     page?: number;
     pageSize?: number;
@@ -236,22 +225,61 @@ export async function listSecretsByFingerprint(
   await secrets.createIndex({ fingerprint: 1, secretId: 1 }, { unique: true });
   await secrets.createIndex({ fingerprint: 1, project: 1, updatedAt: -1 });
   await secrets.createIndex({ fingerprint: 1, entryType: 1, updatedAt: -1 });
+  await secrets.createIndex({ fingerprint: 1, contentKind: 1, updatedAt: -1 });
 
-  const query: Record<string, unknown> = { fingerprint };
+  const queryParts: Record<string, unknown>[] = [{ fingerprint }];
   if (options?.project) {
-    query.project = options.project;
+    queryParts.push({ project: options.project });
   }
   if (options?.entryType) {
-    query.entryType = options.entryType;
+    queryParts.push({ entryType: options.entryType });
   }
+
+  if (options?.contentKind) {
+    if (options.contentKind === "secret") {
+      queryParts.push({
+        $or: [
+          { contentKind: "secret" },
+          { contentKind: { $exists: false }, entryType: "secret" },
+        ],
+      });
+    } else if (options.contentKind === "note") {
+      queryParts.push({
+        $or: [
+          { contentKind: "note" },
+          { contentKind: { $exists: false }, entryType: "note" },
+        ],
+      });
+    } else if (options.contentKind === "env") {
+      const legacyEnvPattern = /(^|\W)(\.?env|dotenv)(\W|$)/i;
+      queryParts.push({
+        $or: [
+          { contentKind: "env" },
+          {
+            contentKind: { $exists: false },
+            entryType: "note",
+            $or: [
+              { title: { $regex: legacyEnvPattern } },
+              { keyName: { $regex: legacyEnvPattern } },
+            ],
+          },
+        ],
+      });
+    }
+  }
+
   if (options?.search?.trim()) {
     const pattern = options.search.trim();
-    query.$or = [
-      { title: { $regex: pattern, $options: "i" } },
-      { keyName: { $regex: pattern, $options: "i" } },
-      { project: { $regex: pattern, $options: "i" } },
-    ];
+    queryParts.push({
+      $or: [
+        { title: { $regex: pattern, $options: "i" } },
+        { keyName: { $regex: pattern, $options: "i" } },
+        { project: { $regex: pattern, $options: "i" } },
+      ],
+    });
   }
+
+  const query: Record<string, unknown> = queryParts.length === 1 ? queryParts[0] : { $and: queryParts };
 
   const pageSize = Math.min(Math.max(options?.pageSize ?? 50, 1), 200);
   const page = Math.max(options?.page ?? 1, 1);

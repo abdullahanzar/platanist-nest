@@ -31,9 +31,11 @@ export async function POST(request: Request) {
     }
 
     const entryType = envelope.payload.entryType;
+    const contentKind = envelope.payload.contentKind;
     const secrets = await listSecretsByFingerprint(envelope.fingerprint, {
       project: envelope.payload.project,
       entryType: entryType && entryType !== "all" ? entryType : undefined,
+      contentKind: contentKind && contentKind !== "all" ? contentKind : undefined,
       search: envelope.payload.search,
       page: envelope.payload.page,
       pageSize: envelope.payload.pageSize,
@@ -46,6 +48,7 @@ export async function POST(request: Request) {
         title: secret.title,
         project: secret.project,
         entryType: secret.entryType,
+        contentKind: secret.contentKind,
         keyName: secret.keyName,
         encryptedSymmetricKey: secret.encryptedSymmetricKey,
         iv: secret.iv,
