@@ -2,23 +2,9 @@ import Link from "next/link";
 import { Github, SearchCheck, ShieldCheck, ExternalLink } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { inspectChecklist, transparencyPoints } from "@/lib/content/trust";
 
 const repoUrl = process.env.NEXT_PUBLIC_GITHUB_REPO_URL;
-
-const transparencyPoints = [
-  "All core logic is inspectable in source code.",
-  "Security claims can be verified against implementation details.",
-  "Any user can audit, fork, and self-host based on their own trust model.",
-  "Open issue and PR history creates a public record of changes over time.",
-];
-
-const inspectChecklist = [
-  "Client-side encryption flow in `src/lib/vault/client.ts`.",
-  "Server verification and nonce/replay protections in `src/lib/vault/server.ts`.",
-  "Vault API routes under `src/app/api/vault/**`.",
-  "CLI policy checks in `src/lib/cli/policy.js`.",
-  "Route-level UX behavior in `src/components/keys/symmetric-key-generator.tsx`.",
-];
 
 export default function GithubPage() {
   return (

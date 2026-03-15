@@ -2,14 +2,7 @@ import Link from "next/link";
 import { BookOpenText, ArrowRight, KeyRound, ShieldCheck, Vault, Github, Terminal } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-
-const quickStartSteps = [
-  "Go to Onboarding and choose Create New Vault.",
-  "Generate your key bundle in-browser.",
-  "Set a backup passphrase and download your encrypted bundle file.",
-  "Activate your key once.",
-  "Save your first secret using Save and Encrypt.",
-];
+import { quickStartSteps } from "@/lib/content/trust";
 
 const returningSteps = [
   "Go to Vault and choose Return to Vault.",

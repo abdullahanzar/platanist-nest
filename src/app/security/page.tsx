@@ -2,14 +2,7 @@ import Link from "next/link";
 import { Shield, TriangleAlert, LockKeyhole, ArrowRight, Github } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-
-const guarantees = [
-  "Private key material stays in the browser and is never intentionally uploaded.",
-  "Secret plaintext is encrypted locally before upload.",
-  "Server stores ciphertext, encrypted symmetric key, iv, and metadata only.",
-  "Requests are signed and include fingerprint + nonce + timestamp.",
-  "Replay and stale request attempts are rejected server-side.",
-];
+import { securityGuarantees } from "@/lib/content/trust";
 
 const weaknesses = [
   {
@@ -101,7 +94,7 @@ export default function SecurityPage() {
           <CardDescription>What the system is designed to protect.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-2 text-sm text-muted-foreground">
-          {guarantees.map((item) => (
+          {securityGuarantees.map((item) => (
             <div key={item} className="rounded-md border border-black/10 bg-background/70 px-3 py-2">
               {item}
             </div>

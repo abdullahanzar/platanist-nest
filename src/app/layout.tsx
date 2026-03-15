@@ -14,8 +14,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Nest",
-  description: "Nest by Platanist, to empower your ideas securely.",
+  title: "Platanist Nest | Zero-Account Encrypted Secrets",
+  description:
+    "Platanist Nest keeps encryption local, exposes security behavior in public code, and supports self-hosted secret workflows.",
 };
 
 export default function RootLayout({
